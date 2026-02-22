@@ -19,3 +19,4 @@ Thumbs.db
 results/
 parameters/params.json
 *.log
+inspect_excel.py
