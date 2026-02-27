@@ -116,15 +116,18 @@ def evaluate_full_path(path_assignments):
             if sp > FAB_SPACE[f]:
                 return float("inf")
 
-        # Incremental CapEx
-        for f in FABS:
-            for ws_idx, ws in enumerate(TOR_WS):
-                delta = max(0, tor_per_fab[f][ws_idx] - prev_tor[f][ws_idx])
-                total_cost += delta * TOR_CAPEX[ws]
+        # Incremental CapEx — excluded for Q1'26 per Excel objective
+        # (Excel formula =F23+F35+...+F97+Y6 starts at Q2'26)
+        if q_idx > 0:
+            for f in FABS:
+                for ws_idx, ws in enumerate(TOR_WS):
+                    delta = max(0, tor_per_fab[f][ws_idx] - prev_tor[f][ws_idx])
+                    total_cost += delta * TOR_CAPEX[ws]
 
-        # Move-out cost
+        # Move-out cost — state must update even in Q1'26; cost excluded
         mo_cost, new_mt = compute_moveout_cost_from_mt(tor_space, mt_counts)
-        total_cost += mo_cost
+        if q_idx > 0:
+            total_cost += mo_cost
         mt_counts = new_mt
         prev_tor = tor_per_fab
 
@@ -216,9 +219,13 @@ def neighbourhood_search(base_path, radius=500, granularity=100):
 
 
 if __name__ == "__main__":
+    # Greedy cost under full 8-quarter objective (for reference)
     GREEDY_COST = 5_207_900_000
 
-    # DP best path (from coarse run)
+    # DP best path (starting point for neighbourhood search)
+    # Under the Excel objective, Q1'26 is free, so the DP will front-load
+    # TOR purchases there. This path is a feasible starting point;  
+    # neighbourhood search will find the optimal Excel-objective solution.
     dp_best_path = [
         {
             1: {1: 8000, 2: 4000, 3: 0},
@@ -302,12 +309,12 @@ if __name__ == "__main__":
     print("Q1b DP REFINEMENT SEARCH")
     print("=" * 70)
 
-    # Verify costs
+    # Verify costs under Excel objective (Q1'26 excluded)
     greedy_eval = evaluate_full_path(greedy_path)
     dp_eval = evaluate_full_path(dp_best_path)
-    print(f"\nVerification:")
-    print(f"  Greedy path cost:  ${greedy_eval:,.0f}  (reported: ${GREEDY_COST:,.0f})")
-    print(f"  DP coarse cost:    ${dp_eval:,.0f}  (reported: $5,204,600,000)")
+    print(f"\nVerification (Excel objective: Q2\'26–Q4\'27 only):")
+    print(f"  Greedy path Excel cost:  ${greedy_eval:,.0f}  (full-obj reported: ${GREEDY_COST:,.0f})")
+    print(f"  DP coarse Excel cost:    ${dp_eval:,.0f}  (full-obj reported: $5,204,600,000)")
 
     # Neighbourhood search around DP best
     print(f"\n--- Neighbourhood search around DP best path ---")
@@ -330,24 +337,27 @@ if __name__ == "__main__":
     # Final comparison
     best_overall = min(refined_cost, greedy_refined_cost)
     print(f"\n{'=' * 70}")
-    print("FINAL COMPARISON")
+    print("FINAL COMPARISON (Excel objective: Q2'26-Q4'27 only)")
     print(f"{'=' * 70}")
-    print(f"  Greedy (original):          ${GREEDY_COST:>18,.0f}")
-    print(f"  DP coarse (gran=2000):      ${'5,204,600,000':>18}")
+    print(f"  Greedy (Excel cost):         ${greedy_eval:>18,.0f}")
+    print(f"  DP coarse (gran=2000):       ${'5,204,600,000 (old obj)':>18}")
     print(f"  DP + neighbourhood (100):   ${refined_cost:>18,.0f}")
     print(f"  Greedy + neighbourhood:     ${greedy_refined_cost:>18,.0f}")
     print(f"  Best overall:               ${best_overall:>18,.0f}")
 
-    gap = (best_overall - GREEDY_COST) / GREEDY_COST * 100
-    print(f"\n  Gap vs greedy: {gap:+.4f}%")
+    if greedy_eval not in (float('inf'), None) and greedy_eval > 0:
+        gap = (best_overall - greedy_eval) / greedy_eval * 100
+        print(f"\n  Gap vs greedy (Excel): {gap:+.4f}%")
+    else:
+        print(f"\n  (Cannot compute gap: greedy path returned inf)")
 
-    if best_overall < GREEDY_COST:
+    if best_overall < greedy_eval:
         print(
-            f"\n  *** DP found a better solution: saves ${GREEDY_COST - best_overall:,.0f} ***"
+            f"\n  *** DP found a better solution: saves ${greedy_eval - best_overall:,.0f} vs greedy ***"
         )
     else:
         print(
-            f"\n  Greedy is optimal (or within rounding error) of the best found solution."
+            f"\n  Greedy neighbourhood matches or beats DP neighbourhood."
         )
 
     # Save

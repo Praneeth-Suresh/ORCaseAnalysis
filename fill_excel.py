@@ -18,7 +18,6 @@ Answer areas:
 """
 
 import json
-import math
 import shutil
 from pathlib import Path
 
@@ -31,125 +30,15 @@ import openpyxl
 ROOT = Path(__file__).resolve().parent
 RESULTS_DIR = ROOT / "results"
 SRC_SHEET = ROOT / "5)BACC2026ParticipantAnswerSheet.xlsx"
-DST_SHEET = RESULTS_DIR / "BACC2026_FilledAnswerSheet_DP.xlsx"
+DST_SHEET = RESULTS_DIR / "BACC2026_FilledAnswerSheet.xlsx"
 Q1A_RESULTS_PATH = RESULTS_DIR / "q1a_results.json"
-Q1B_RESULTS_PATH = (
-    RESULTS_DIR / "dp_lean_results.json"
-)  # DP optimal (gran=1000, $5,009,100,000)
-PARAMS_PATH = ROOT / "parameters" / "params.json"
+Q1B_RESULTS_PATH = RESULTS_DIR / "q1b_solution_v2_results.json"
 
 with open(Q1A_RESULTS_PATH) as f:
     SOL_A = json.load(f)
 
 with open(Q1B_RESULTS_PATH) as f:
-    _dp_raw = json.load(f)
-
-with open(PARAMS_PATH) as f:
-    _P = json.load(f)
-
-# ───────────────────────────────────────────────────────────────────────────────
-# BUILD SOL_B FROM DP PATH
-# Converts dp_results.json (list-of-quarters format) into the dict format
-# expected by get_tool_count_b / get_flow_b:
-#   assignment : {quarter: {node_str: {fab_str: wafers}}}
-#   tor_tools  : {quarter: {ws: {fab_str: count}}}   (cumulative — never decreases)
-#   mt_tools   : {quarter: {ws: {fab_str: count}}}   (after greedy move-outs)
-# ───────────────────────────────────────────────────────────────────────────────
-
-
-def _build_sol_b(dp_raw, params):
-    """Derive assignment, tor_tools, and mt_tools from the DP optimal path."""
-    _fabs = [1, 2, 3]
-    _nodes = [1, 2, 3]
-    _mt_ws = ["A", "B", "C", "D", "E", "F"]
-    _tor_ws = ["A+", "B+", "C+", "D+", "E+", "F+"]
-
-    _proc = {
-        int(n): [(s["ws_tor"], s["rpt_tor"]) for s in steps]
-        for n, steps in params["process_steps"].items()
-    }
-    _ws_specs = {
-        ws: (d["space_m2"], d["utilization"]) for ws, d in params["ws_specs"].items()
-    }
-    _min_wk = params["minutes_per_week"]
-    _moveout_cost = params["moveout_cost_per_tool"]
-    _fab_space = {int(f): d["space"] for f, d in params["fab_specs"].items()}
-    _init_mt = {
-        ws: {int(f): d["tools"][ws] for f, d in params["fab_specs"].items()}
-        for ws in _mt_ws
-    }
-    _mt_space = {ws: params["ws_specs"][ws]["space_m2"] for ws in _mt_ws}
-    _tor_space = {ws: params["ws_specs"][ws]["space_m2"] for ws in _tor_ws}
-
-    # TOR tools needed per wafer of each node
-    _tor_per_wfr = {}
-    for n in _nodes:
-        _tor_per_wfr[n] = {ws: 0.0 for ws in _tor_ws}
-        for ws_tor, rpt_tor in _proc[n]:
-            _, util = _ws_specs[ws_tor]
-            _tor_per_wfr[n][ws_tor] += rpt_tor / (_min_wk * util)
-
-    assignment = {}
-    tor_tools = {}
-    mt_tools = {}
-
-    # Mutable inventory state
-    cur_mt = {ws: {f: _init_mt[ws][f] for f in _fabs} for ws in _mt_ws}
-    cur_tor = {ws: {f: 0 for f in _fabs} for ws in _tor_ws}
-
-    for q_entry in dp_raw["dp_path"]:
-        q = q_entry["quarter"]
-        asgn = q_entry["assignment"]  # {node_str: {fab_str: wafers}}
-
-        # ── assignment ──
-        assignment[q] = {
-            str(n): {str(f): int(asgn[str(n)][str(f)]) for f in _fabs} for n in _nodes
-        }
-
-        # ── TOR tools needed this quarter (continuous, then ceiling-rounded) ──
-        tor_cont = {ws: {f: 0.0 for f in _fabs} for ws in _tor_ws}
-        for f in _fabs:
-            for n in _nodes:
-                wafers = asgn[str(n)][str(f)]
-                if wafers > 0:
-                    for ws in _tor_ws:
-                        tor_cont[ws][f] += wafers * _tor_per_wfr[n][ws]
-        tor_req = {ws: {f: math.ceil(tor_cont[ws][f]) for f in _fabs} for ws in _tor_ws}
-
-        # TOR inventory is cumulative (tools cannot be removed)
-        for ws in _tor_ws:
-            for f in _fabs:
-                cur_tor[ws][f] = max(cur_tor[ws][f], tor_req[ws][f])
-
-        # TOR space needed per fab based on current inventory
-        tor_sp = {
-            f: sum(_tor_space[ws] * cur_tor[ws][f] for ws in _tor_ws) for f in _fabs
-        }
-
-        # ── Greedy MT move-out (largest footprint first) ──
-        for f in _fabs:
-            mt_sp = sum(_mt_space[ws] * cur_mt[ws][f] for ws in _mt_ws)
-            excess = tor_sp[f] + mt_sp - _fab_space[f]
-            if excess > 0.001:
-                for ws in sorted(_mt_ws, key=lambda w: -_mt_space[w]):
-                    if excess <= 0.001:
-                        break
-                    avail = cur_mt[ws][f]
-                    if avail <= 0:
-                        continue
-                    to_move = min(avail, math.ceil(excess / _mt_space[ws]))
-                    cur_mt[ws][f] -= to_move
-                    excess -= to_move * _mt_space[ws]
-
-        # ── Store tool snapshots ──
-        tor_tools[q] = {ws: {str(f): cur_tor[ws][f] for f in _fabs} for ws in _tor_ws}
-        mt_tools[q] = {ws: {str(f): cur_mt[ws][f] for f in _fabs} for ws in _mt_ws}
-
-    return {"assignment": assignment, "tor_tools": tor_tools, "mt_tools": mt_tools}
-
-
-SOL_B = _build_sol_b(_dp_raw, _P)
-print(f"Part B optimal cost (DP gran=1000): ${_dp_raw['dp_coarse_cost']:,.0f}")
+    SOL_B = json.load(f)
 
 QUARTERS = ["Q1'26", "Q2'26", "Q3'26", "Q4'26", "Q1'27", "Q2'27", "Q3'27", "Q4'27"]
 FABS = [1, 2, 3]

@@ -385,7 +385,10 @@ def dp_solve(granularity=500, n_workers=None):
                 mo_cost, new_mt = compute_moveout_cost(tor_space_per_fab, prev_mt)
 
                 # Total cost for this transition
+                # Q1'26 (q_idx==0) excluded from Excel objective
                 transition_cost = capex + mo_cost
+                if q_idx == 0:
+                    transition_cost = 0
                 new_cost = prev_cost + transition_cost
 
                 # New state
