@@ -6,15 +6,32 @@ Three algorithmic families were explored to solve this optimisation problem: **M
 
 ---
 
-## Setup
+## Start here
 
-- Python 3.13+ with a virtual environment recommended.
-- Install dependencies:
-  ```
-  pip install pulp openpyxl
-  ```
-- All problem data is read directly from the Excel answer sheet **`5)BACC2026ParticipantAnswerSheet.xlsx`** at runtime (no separate data prep step needed for the main solvers).
-- Solver outputs are written as JSON files into the [results/](results/) folder.
+This case study uses competition data, not live manufacturing data. The repository compares production and equipment planning strategies under the constraints in the supplied case. Praneeth Suresh's [Q1b dynamic-programming implementation](https://github.com/Praneeth-Suresh/ORCaseAnalysis/commit/95620ff54df3cad3094388a60866860584f79e6a) adds an alternative to the mixed-integer model.
+
+One result you can reproduce without a solver: the parameter check reports that **only Fab 3 starts with workstation C**, with 40 tools. In the extractor's single-fab, all-Mintech diagnostic, C requirements grow from 38 tools in Q1'26 to 201 in Q4'27. This illustrates why equipment and production have to be planned together. It is a diagnostic under a restricted scenario, not a recommended purchase.
+
+A local run of the [Q1b space-aware greedy heuristic](q1b_solution_v2.py) reported a feasible plan under its own checks, with a modelled cost of **$5.2079 billion**: $4.6699 billion in tool purchases and $538 million in move-out costs. The heuristic keeps each node in one fab per quarter and does not charge inter-fab transfers. This is a result for that simplified model, not a global optimum or a realised business saving.
+
+## Reproduce
+
+From the repository root, create a Python virtual environment (Python 3.13 recommended):
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install pulp openpyxl
+mkdir -p results
+python data_extractor.py
+```
+
+The extractor writes the parameter snapshot used by Q1a and several alternative solvers. It prints starting tool counts, space checks, and the single-fab diagnostics.
+
+- **Reproduce the greedy result:** run `python q1b_solution_v2.py` after extraction. Inspect `results/q1b_solution_v2_results.json` for the cost breakdown and the terminal output for the feasibility checks.
+- **Q1a, no tool move-outs:** run `python q1a_solver.py` after extraction. If the solver produces a solution, it writes `results/q1a_results.json`.
+- **Q1b, allow Mintech move-outs:** run `python q1b_correct_solver.py`. This solver reads the included workbook directly and writes `results/q1b_correct_results.json` when it completes. Open the JSON to inspect the tool and wafer flow plans.
+- The [modelling workflow](Workflow.md) explains what the objectives and constraints represent. A quarter-by-quarter solve is not a certificate of the optimal policy over all eight quarters. Generated result files are not checked in. The source does not establish a competition ranking.
 
 ---
 
@@ -220,30 +237,9 @@ In plain language: _the cheapest way to reach the end of quarter q in a given st
 
 ---
 
-#### [`q1b_dp_lean.py`](q1b_dp_lean.py) — Lean Parallelised DP (Reduced State)
-
-**Key improvement over `q1b_dp_solver.py`:** The observation that Node 3 is the only node that uses Fab 3 (because Fab 3 only has C workstations, which Node 3 uses exclusively) reduces the effective assignment space from a 3×3 matrix to just four free variables: how much of Node 1 goes to Fab 1 (the rest to Fab 2), how much of Node 2 goes to Fab 2 (the rest to Fab 1), how much of Node 3 fills Fab 3 (the rest splits between Fab 1 and Fab 2), and how much of that remainder goes to Fab 1.
-
-**How it works:**
-
-1. **Precomputation.** Before the DP starts, the TOR tools needed _per wafer per node_ are computed once:
-   $$\text{tor\_per\_wafer}[n][ws] = \sum_{\text{steps of node } n \text{ using } ws} \frac{RPT_{ws}}{10080 \times u_{ws}}$$
-
-2. **Candidate generation.** For each quarter, loop over a grid of the four free variables (at adjustable granularity). For each grid point: compute TOR space per fab, discard if any fab overflows, otherwise record the candidate.
-
-3. **Parallel evaluation.** All candidates are evaluated in parallel. Each worker returns the TOR tool requirements (as a hashable tuple for the DP table key) and whether the assignment is feasible.
-
-4. **DP update.** Same recurrence as `q1b_dp_solver.py`, but with a much smaller state space and finer granularity possible within the same runtime budget.
-
-5. **Greedy move-out sub-routine.** For each candidate, the Mintech move-out cost is computed greedily: if the TOR tools for a fab need more space than remains after Mintech tools, remove the largest-footprint Mintech tools first until enough space is freed.
-
-6. **Output:** Best path saved to `results/dp_lean_results.json` alongside total cost, CapEx breakdown, and move-out breakdown.
-
----
-
 #### [`q1b_dp_refine.py`](q1b_dp_refine.py) — DP Refinement via Local Neighbourhood Search
 
-**Purpose:** The DP solvers use a coarse grid (e.g. every 1,000 or 2,000 wafers) to keep runtime manageable, which means the optimal solution may be slightly off the grid. This file _refines_ the best path found by `q1b_dp_lean.py` using two techniques:
+**Purpose:** The DP solvers use a coarse grid (e.g. every 1,000 or 2,000 wafers) to keep runtime manageable, which means the optimal solution may be slightly off the grid. This historical script embeds candidate paths from prior runs. The original reduced-state solver that produced one of the paths is not in this checkout. The refinement applies two techniques:
 
 1. **Local neighbourhood search.** Starting from the best-known 8-quarter path, try perturbing each quarter's assignment by ±`radius` wafers at a finer `granularity` (e.g. 100 wafers). Accept any improvement and repeat until no improvement is found. This is a classic _iterative improvement_ heuristic:
 
@@ -252,16 +248,6 @@ In plain language: _the cheapest way to reach the end of quarter q in a given st
 2. **Beam search.** Run the DP forward at medium granularity (500 wafers) but keep only the top-`B` states at each stage (the "beam"). This is a memory-efficient approximate DP that validates whether the neighbourhood search result is consistent with a broader exploration of the state space.
 
 **Output:** Refined path and cost saved to `results/dp_refine_results.json`.
-
----
-
-## Files Marked for Deletion
-
-The following file does **not** implement any optimisation algorithm. It is a post-processing script that takes a hardcoded best-known DP path (embedded directly in the source) and reconstructs a detailed JSON output from it. Because the path is hardcoded, any change to the problem data or solver would require manually updating this file, making it redundant and a potential source of stale results:
-
-| File                                             | Reason                                                                                                                                              |
-| ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [`q1b_build_solution.py`](q1b_build_solution.py) | Pure post-processing: reconstructs solution JSON from a hardcoded assignment — no optimisation logic. Superseded by the output of `q1b_dp_lean.py`. |
 
 ---
 
@@ -277,6 +263,4 @@ The following file does **not** implement any optimisation algorithm. It is a po
 | [q1b_optimal_solution.py](q1b_optimal_solution.py) | Greedy     | Space-per-wafer assignment + greedy move-outs            |
 | [q1b_solution_v2.py](q1b_solution_v2.py)           | Greedy     | Same as above with integer-safe binary-search rounding   |
 | [q1b_dp_solver.py](q1b_dp_solver.py)               | DP         | Parallelised multi-stage DP, full TOR-state              |
-| [q1b_dp_lean.py](q1b_dp_lean.py)                   | DP         | Lean DP with reduced 4-variable assignment space         |
 | [q1b_dp_refine.py](q1b_dp_refine.py)               | DP         | Local neighbourhood search + beam search refinement      |
-| [q1b_build_solution.py](q1b_build_solution.py)     | **Delete** | Hardcoded post-processor, no optimisation                |
