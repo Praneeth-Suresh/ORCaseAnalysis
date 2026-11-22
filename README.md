@@ -12,7 +12,7 @@ This case study uses competition data, not live manufacturing data. The reposito
 
 One result you can reproduce without a solver: the parameter check reports that **only Fab 3 starts with workstation C**, with 40 tools. In the extractor's single-fab, all-Mintech diagnostic, C requirements grow from 38 tools in Q1'26 to 201 in Q4'27. This illustrates why equipment and production have to be planned together. It is a diagnostic under a restricted scenario, not a recommended purchase.
 
-A local run of the [Q1b space-aware greedy heuristic](q1b_solution_v2.py) reported a feasible plan under its own checks, with a modelled cost of **$5.2079 billion**: $4.6699 billion in tool purchases and $538 million in move-out costs. The heuristic keeps each node in one fab per quarter and does not charge inter-fab transfers. This is a result for that simplified model, not a global optimum or a realised business saving.
+A local run of the [Q1b space-aware greedy heuristic](q1b_solution_v2.py) reported a feasible plan under its own checks, with a modelled cost of **$5.2079 billion**: $4.6699 billion in tool purchases and $538 million in move-out costs. The heuristic allocates each node’s flow across fabs by quarter, without modelling transfers between process steps. This is a result for that simplified model, not a global optimum or a realised business saving.
 
 ## Reproduce
 
